@@ -1,0 +1,41 @@
+From 8f335261c93ae4d1c04a08cbf5c93a91632548b0 Mon Sep 17 00:00:00 2001
+From: Kwanghoon Son <kwangson@yahoo.com>
+Date: Thu, 17 Aug 2023 05:22:13 +0000
+Subject: [PATCH 4/4] Add mmc on lichee pi
+
+---
+ .../boot/dts/thead/th1520-lichee-pi-4a.dts      | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/arch/riscv/boot/dts/thead/th1520-lichee-pi-4a.dts b/arch/riscv/boot/dts/thead/th1520-lichee-pi-4a.dts
+index a1248b2ee3a3..0d0366031de2 100644
+--- a/arch/riscv/boot/dts/thead/th1520-lichee-pi-4a.dts
++++ b/arch/riscv/boot/dts/thead/th1520-lichee-pi-4a.dts
+@@ -27,6 +27,23 @@ chosen {
+ 	};
+ };
+ 
++&sdhci_clk {
++	clock-frequency = <198000000>;
++};
++
+ &uart0 {
+ 	status = "okay";
+ };
++
++&mmc0 {
++	max-frequency = <198000000>;
++	non-removable;
++	mmc-hs400-1_8v;
++	thead,io-fixed-1v8;
++	no-sdio;
++	no-sd;
++	thead,pull-up;
++	bus-width = <8>;
++	status = "okay";
++
++};
+\ No newline at end of file
+-- 
+2.34.1
+

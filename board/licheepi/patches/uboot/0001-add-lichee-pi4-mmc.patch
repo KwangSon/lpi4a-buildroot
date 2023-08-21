@@ -1,0 +1,615 @@
+From bf44de60f1738efb179302cd0aca01612260f6b3 Mon Sep 17 00:00:00 2001
+From: Kwanghoon Son <kwangson@yahoo.com>
+Date: Wed, 16 Aug 2023 06:47:11 +0000
+Subject: [PATCH] add lichee pi4 mmc
+
+---
+ arch/riscv/dts/th1520.dtsi |  14 ++
+ drivers/mmc/Kconfig        |   7 +
+ drivers/mmc/Makefile       |   1 +
+ drivers/mmc/snps_sdhci.c   | 447 +++++++++++++++++++++++++++++++++++++
+ drivers/mmc/snps_sdhci.h   |  84 +++++++
+ 5 files changed, 553 insertions(+)
+ create mode 100644 drivers/mmc/snps_sdhci.c
+ create mode 100644 drivers/mmc/snps_sdhci.h
+
+diff --git a/arch/riscv/dts/th1520.dtsi b/arch/riscv/dts/th1520.dtsi
+index f7bfa42243..2176e8f066 100644
+--- a/arch/riscv/dts/th1520.dtsi
++++ b/arch/riscv/dts/th1520.dtsi
+@@ -402,5 +402,19 @@
+ 				interrupts = <55 IRQ_TYPE_LEVEL_HIGH>;
+ 			};
+ 		};
++		
++		sdhci0: sd@ffe7090000 {
++			compatible = "snps,dwcmshc-sdhci";
++			reg = <0xff 0xe7090000 0x0 0x10000>;
++			index = <0x1>;
++			clocks = <&apb_clk>;
++			clock-frequency = <198000000>;
++			max-frequency = <198000000>;
++			sd-uhs-sdr104;
++			pull_up;
++			clock-names = "core";
++			bus-width = <4>;
++			voltage= "3.3v";
++		};
+ 	};
+ };
+diff --git a/drivers/mmc/Kconfig b/drivers/mmc/Kconfig
+index de01b9687b..5ddeeae1b6 100644
+--- a/drivers/mmc/Kconfig
++++ b/drivers/mmc/Kconfig
+@@ -58,6 +58,13 @@ if MMC
+ config MMC_SDHCI_ADMA_HELPERS
+ 	bool
+ 
++config MMC_SDHCI_SNPS
++	bool "SNPS SDHCI controller"
++	depends on DM_MMC
++	depends on MMC_SDHCI
++	help
++		Snps sdhci.
++
+ config MMC_SPI
+ 	bool "Support for SPI-based MMC controller"
+ 	depends on DM_MMC && DM_SPI
+diff --git a/drivers/mmc/Makefile b/drivers/mmc/Makefile
+index 2c65c4765a..e2a2ced2e8 100644
+--- a/drivers/mmc/Makefile
++++ b/drivers/mmc/Makefile
+@@ -57,6 +57,7 @@ obj-$(CONFIG_NEXELL_DWMMC) += nexell_dw_mmc.o
+ # SDHCI
+ obj-$(CONFIG_MMC_SDHCI)			+= sdhci.o
+ obj-$(CONFIG_MMC_SDHCI_ASPEED)		+= aspeed_sdhci.o
++obj-$(CONFIG_MMC_SDHCI_SNPS)		+= snps_sdhci.o
+ obj-$(CONFIG_MMC_SDHCI_ATMEL)		+= atmel_sdhci.o
+ obj-$(CONFIG_MMC_SDHCI_BCM2835)		+= bcm2835_sdhci.o
+ obj-$(CONFIG_MMC_SDHCI_BCMSTB)		+= bcmstb_sdhci.o
+diff --git a/drivers/mmc/snps_sdhci.c b/drivers/mmc/snps_sdhci.c
+new file mode 100644
+index 0000000000..54b7a6de0e
+--- /dev/null
++++ b/drivers/mmc/snps_sdhci.c
+@@ -0,0 +1,447 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (C) 2021 Alibaba Group Holding Limited.
++ */
++
++#include <common.h>
++#include <clk.h>
++#include <dm.h>
++#include <malloc.h>
++#include <linux/delay.h>
++#include <sdhci.h>
++#include "snps_sdhci.h"
++
++#define HS400_DELAY_LANE	24
++
++volatile int DELAY_LANE = 50;
++
++static void sdhci_phy_1_8v_init_no_pull(struct sdhci_host *host)
++{
++    uint32_t val;
++    sdhci_writel(host, 1, DWC_MSHC_PTR_PHY_R);
++    sdhci_writeb(host, 1 << 4, PHY_SDCLKDL_CNFG_R);
++    sdhci_writeb(host, 0x40, PHY_SDCLKDL_DC_R);
++    sdhci_writeb(host, 0xa, PHY_DLL_CNFG2_R);
++
++    val = sdhci_readb(host, PHY_SDCLKDL_CNFG_R);
++    val &= ~(1 << 4);
++    sdhci_writeb(host, val, PHY_SDCLKDL_CNFG_R);
++
++
++    val = sdhci_readw(host, PHY_CMDPAD_CNFG_R);
++    sdhci_writew(host, val | 1, PHY_CMDPAD_CNFG_R);
++
++    val = sdhci_readw(host, PHY_DATAPAD_CNFG_R);
++    sdhci_writew(host, val | 1, PHY_DATAPAD_CNFG_R);
++
++    val = sdhci_readw(host, PHY_RSTNPAD_CNFG_R);
++    sdhci_writew(host, val | 1, PHY_RSTNPAD_CNFG_R);
++
++    val = sdhci_readw(host, PHY_STBPAD_CNFG_R);
++    sdhci_writew(host, val | 1, PHY_STBPAD_CNFG_R);
++
++    val = sdhci_readb(host, PHY_DLL_CTRL_R);
++    sdhci_writeb(host, val | 1, PHY_DLL_CTRL_R);
++}
++
++static void sdhci_phy_3_3v_init_no_pull(struct sdhci_host *host)
++{
++    uint32_t val;
++    sdhci_writel(host, 1, DWC_MSHC_PTR_PHY_R);
++    sdhci_writeb(host, 1 << 4, PHY_SDCLKDL_CNFG_R);
++    sdhci_writeb(host, 0x40, PHY_SDCLKDL_DC_R);
++    sdhci_writeb(host, 0xa, PHY_DLL_CNFG2_R);
++
++    val = sdhci_readb(host, PHY_SDCLKDL_CNFG_R);
++    val &= ~(1 << 4);
++    sdhci_writeb(host, val, PHY_SDCLKDL_CNFG_R);
++
++    val = sdhci_readw(host, PHY_CMDPAD_CNFG_R);
++    sdhci_writew(host, val | 2, PHY_CMDPAD_CNFG_R);
++
++    val = sdhci_readw(host, PHY_DATAPAD_CNFG_R);
++    sdhci_writew(host, val | 2, PHY_DATAPAD_CNFG_R);
++
++    val = sdhci_readw(host, PHY_RSTNPAD_CNFG_R);
++    sdhci_writew(host, val | 2, PHY_RSTNPAD_CNFG_R);
++
++    val = sdhci_readw(host, PHY_STBPAD_CNFG_R);
++    sdhci_writew(host, val | 2, PHY_STBPAD_CNFG_R);
++
++    val = sdhci_readb(host, PHY_DLL_CTRL_R);
++    sdhci_writeb(host, val | 1, PHY_DLL_CTRL_R);
++}
++
++static void sdhci_phy_1_8v_init(struct sdhci_host *host)
++{
++    uint32_t val;
++	struct snps_sdhci_plat *plat = dev_get_plat(host->mmc->dev);
++    if(plat->pull_up_en == false) {
++        sdhci_phy_1_8v_init_no_pull(host);
++        return;
++    }
++    //set driving force
++    sdhci_writel(host, (1 << PHY_RSTN) | (0xc << PAD_SP) | (0xc << PAD_SN), PHY_CNFG_R);
++
++    //disable delay lane
++    sdhci_writeb(host, 1 << UPDATE_DC, PHY_SDCLKDL_CNFG_R);
++    //set delay lane
++    sdhci_writeb(host, DELAY_LANE, PHY_SDCLKDL_DC_R);
++    sdhci_writeb(host, 0xa, PHY_DLL_CNFG2_R);
++    //enable delay lane
++    val = sdhci_readb(host, PHY_SDCLKDL_CNFG_R);
++    val &= ~(1 << UPDATE_DC);
++    sdhci_writeb(host, val, PHY_SDCLKDL_CNFG_R);
++
++    val = (1 << RXSEL) | (1 << WEAKPULL_EN) | (3 << TXSLEW_CTRL_P) | (3 << TXSLEW_CTRL_N);
++    sdhci_writew(host, val, PHY_CMDPAD_CNFG_R);
++    sdhci_writew(host, val, PHY_DATAPAD_CNFG_R);
++    sdhci_writew(host, val, PHY_RSTNPAD_CNFG_R);
++
++    val = (3 << TXSLEW_CTRL_P) | (3 << TXSLEW_CTRL_N);
++    sdhci_writew(host, val, PHY_CLKPAD_CNFG_R);
++
++    val = (1 << RXSEL) | (2 << WEAKPULL_EN) | (3 << TXSLEW_CTRL_P) | (3 << TXSLEW_CTRL_N);
++    sdhci_writew(host, val, PHY_STBPAD_CNFG_R);
++
++    /* enable data strobe mode */
++    sdhci_writeb(host, 0, PHY_DLL_CTRL_R);
++    sdhci_writew(host, 0, SDHCI_CLOCK_CONTROL);
++    sdhci_writew(host, 0x8000, PHY_DLLBT_CNFG_R);
++    sdhci_writeb(host, 3 << SLV_INPSEL, PHY_DLLDL_CNFG_R);
++    sdhci_writeb(host, 0x25, PHY_DLL_CNFG1_R);
++    sdhci_writew(host, 0x7, SDHCI_CLOCK_CONTROL);
++    sdhci_writeb(host, (1 << DLL_EN),  PHY_DLL_CTRL_R);
++}
++
++static void sdhci_phy_3_3v_init(struct sdhci_host *host)
++{
++    uint32_t val;
++	struct snps_sdhci_plat *plat = dev_get_plat(host->mmc->dev);
++    if(plat->pull_up_en == false) {
++        sdhci_phy_3_3v_init_no_pull(host);
++        return;
++    }
++    //set driving force
++    sdhci_writel(host, (1 << PHY_RSTN) | (0xc << PAD_SP) | (0xc << PAD_SN), PHY_CNFG_R);
++
++    //disable delay lane
++    sdhci_writeb(host, 1 << UPDATE_DC, PHY_SDCLKDL_CNFG_R);
++    //set delay lane
++    sdhci_writeb(host, DELAY_LANE, PHY_SDCLKDL_DC_R);
++    sdhci_writeb(host, 0xa, PHY_DLL_CNFG2_R);
++    //enable delay lane
++    val = sdhci_readb(host, PHY_SDCLKDL_CNFG_R);
++    val &= ~(1 << UPDATE_DC);
++    sdhci_writeb(host, val, PHY_SDCLKDL_CNFG_R);
++
++    val = (2 << RXSEL) | (1 << WEAKPULL_EN) | (3 << TXSLEW_CTRL_P) | (3 << TXSLEW_CTRL_N);
++    sdhci_writew(host, val, PHY_CMDPAD_CNFG_R);
++    sdhci_writew(host, val, PHY_DATAPAD_CNFG_R);
++    sdhci_writew(host, val, PHY_RSTNPAD_CNFG_R);
++
++    val = (3 << TXSLEW_CTRL_P) | (3 << TXSLEW_CTRL_N);
++    sdhci_writew(host, val, PHY_CLKPAD_CNFG_R);
++
++    val = (2 << RXSEL) | (2 << WEAKPULL_EN) | (3 << TXSLEW_CTRL_P) | (3 << TXSLEW_CTRL_N);
++    sdhci_writew(host, val, PHY_STBPAD_CNFG_R);
++
++    sdhci_writeb(host, (1 << DLL_EN),  PHY_DLL_CTRL_R);
++    /*set i wait*/
++    sdhci_writeb(host, 0x5, PHY_DLL_CNFG1_R);
++}
++
++void snps_set_uhs_timing(struct sdhci_host *host)
++{
++	struct mmc *mmc = (struct mmc *)host->mmc;
++	u32 reg;
++
++	reg = sdhci_readw(host, SDHCI_HOST_CONTROL2);
++	reg &= ~SDHCI_CTRL_UHS_MASK;
++
++	switch (mmc->selected_mode) {
++	case UHS_SDR50:
++	case MMC_HS_52:
++		sdhci_phy_1_8v_init(host);
++		reg |= SDHCI_CTRL_UHS_SDR50;
++		break;
++	case UHS_DDR50:
++	case MMC_DDR_52:
++		sdhci_phy_1_8v_init(host);
++		reg |= SDHCI_CTRL_UHS_DDR50;
++		break;
++	case UHS_SDR104:
++	case MMC_HS_200:
++		sdhci_phy_1_8v_init(host);
++		reg |= SDHCI_CTRL_UHS_SDR104;
++		break;
++	case MMC_HS_400:
++		DELAY_LANE = HS400_DELAY_LANE;
++		sdhci_phy_1_8v_init(host);
++		reg |= SNPS_SDHCI_CTRL_HS400;
++		break;
++	default:
++		sdhci_phy_3_3v_init(host);
++		reg |= SDHCI_CTRL_UHS_SDR12;
++	}
++
++	sdhci_writew(host, reg, SDHCI_HOST_CONTROL2);
++
++    if (mmc->selected_mode == MMC_HS_400) {
++       // //disable delay lane
++       // sdhci_writeb(host, 1 << UPDATE_DC, PHY_SDCLKDL_CNFG_R);
++       // //set delay lane
++       // sdhci_writeb(host, DELAY_LANE, PHY_SDCLKDL_DC_R);
++       // //enable delay lane
++       // reg = sdhci_readb(host, PHY_SDCLKDL_CNFG_R);
++       // reg &= ~(1 << UPDATE_DC);
++       // sdhci_writeb(host, reg, PHY_SDCLKDL_CNFG_R);
++
++        //disable auto tuning
++        reg = sdhci_readl(host, AT_CTRL_R);
++        reg &= ~1;
++        sdhci_writel(host, reg, AT_CTRL_R);
++    } else {
++        sdhci_writeb(host, 0, PHY_DLLDL_CNFG_R);
++    }
++}
++
++static void snps_sdhci_set_control_reg(struct sdhci_host *host)
++{
++	struct mmc *mmc = (struct mmc *)host->mmc;
++	struct snps_sdhci_plat *plat = dev_get_plat(host->mmc->dev);
++	u32 reg;
++
++    reg = sdhci_readw(host, EMMC_CTRL_R);
++	if (IS_SD(host->mmc)) {
++        reg &=~EMMC_CARD;
++	} else {
++        reg |=EMMC_CARD;
++    }
++
++    sdhci_writeb(host, reg, EMMC_CTRL_R);
++
++    if (mmc->signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
++        reg = sdhci_readw(host, SDHCI_HOST_CONTROL2);
++        reg |= SDHCI_CTRL_VDD_180;
++        sdhci_writew(host, reg, SDHCI_HOST_CONTROL2);
++        sdhci_phy_1_8v_init(host);
++    } else {
++        reg = sdhci_readw(host, SDHCI_HOST_CONTROL2);
++        reg &= ~SDHCI_CTRL_VDD_180;
++	if (plat->io_fixed_1v8)
++	    reg |= SDHCI_CTRL_VDD_180;
++        sdhci_writew(host, reg, SDHCI_HOST_CONTROL2);
++        sdhci_phy_3_3v_init(host);
++    }
++
++    snps_set_uhs_timing(host);
++}
++
++extern int mmc_send_cmd(struct mmc *mmc, struct mmc_cmd *cmd, struct mmc_data *data);
++static int snps_execute_tuning(struct mmc *mmc, u8 opcode)
++{
++#define SDHCI_TUNING_LOOP_COUNT 128
++	struct sdhci_host *host = dev_get_priv(mmc->dev);
++    struct mmc_cmd cmd;
++    struct mmc_data data;
++    char tuning_loop_counter = SDHCI_TUNING_LOOP_COUNT;
++    uint32_t val = 0;
++    uint16_t ctrl = 0;
++
++    debug("%s\n", __func__);
++
++    sdhci_writeb(host, 3 << INPSEL_CNFG, PHY_ATDL_CNFG_R);
++
++    val = sdhci_readl(host, AT_CTRL_R);
++
++    val &= ~((1 << CI_SEL) | (1 << RPT_TUNE_ERR)\
++            | (1 << SW_TUNE_EN) |(0xf << WIN_EDGE_SEL));
++    val |= (1 << AT_EN) | (1 << SWIN_TH_EN) | (1 << TUNE_CLK_STOP_EN)\
++            | (1 << PRE_CHANGE_DLY) | (3 << POST_CHANGE_DLY) | (9 << SWIN_TH_VAL);
++
++    sdhci_writel(host, val, AT_CTRL_R);
++    val = sdhci_readl(host, AT_CTRL_R);
++    if(!(val & (1 << AT_EN))) {
++        printf("*****Auto Tuning is NOT Enable!!!\n");
++        return -1;
++    }
++
++    //Start Tuning
++    ctrl = sdhci_readw(host, SDHCI_HOST_CONTROL2);
++	ctrl |= SDHCI_CTRL_EXEC_TUNING;
++	sdhci_writew(host, ctrl, SDHCI_HOST_CONTROL2);
++
++    mdelay(1);
++
++    do {
++        cmd.cmdidx = opcode;
++        cmd.resp_type = MMC_RSP_R1;
++        cmd.cmdarg = 0;
++
++        data.blocksize = 64;
++        data.blocks = 1;
++        data.flags = MMC_DATA_READ;
++
++        if (tuning_loop_counter-- == 0)
++            break;
++
++        if (cmd.cmdidx == MMC_CMD_SEND_TUNING_BLOCK_HS200 &&
++            mmc->bus_width == 8)
++            data.blocksize = 128;
++
++        sdhci_writew(host, SDHCI_MAKE_BLKSZ(SDHCI_DEFAULT_BOUNDARY_ARG,
++                            data.blocksize),
++                 SDHCI_BLOCK_SIZE);
++        sdhci_writew(host, data.blocks, SDHCI_BLOCK_COUNT);
++        sdhci_writew(host, SDHCI_TRNS_READ, SDHCI_TRANSFER_MODE);
++
++        mmc_send_cmd(mmc, &cmd, NULL);
++        ctrl = sdhci_readw(host, SDHCI_HOST_CONTROL2);
++
++        if (cmd.cmdidx == MMC_CMD_SEND_TUNING_BLOCK)
++            udelay(1);
++
++	} while (ctrl & SDHCI_CTRL_EXEC_TUNING);
++
++	if (tuning_loop_counter < 0) {
++		ctrl &= ~SDHCI_CTRL_TUNED_CLK;
++		sdhci_writel(host, ctrl, SDHCI_HOST_CONTROL2);
++	}
++
++	if (!(ctrl & SDHCI_CTRL_TUNED_CLK)) {
++		printf("%s:Tuning failed\n", __func__);
++		return -1;
++	}
++
++    return 0;
++}
++
++const struct sdhci_ops snps_ops = {
++	.platform_execute_tuning = &snps_execute_tuning,
++	.set_control_reg = &snps_sdhci_set_control_reg,
++};
++
++static int snps_sdhci_probe(struct udevice *dev)
++{
++	struct mmc_uclass_priv *upriv = dev_get_uclass_priv(dev);
++	struct snps_sdhci_plat *plat = dev_get_plat(dev);
++	struct sdhci_host *host = dev_get_priv(dev);
++
++	u32 max_clk;
++	struct clk clk;
++	int ret;
++
++	ret = clk_get_by_index(dev, 0, &clk);
++	if (ret)
++		return ret;
++
++	plat->pull_up_en = false;
++	plat->io_fixed_1v8 = false;
++	host->name = dev->name;
++	host->ioaddr = (void *)devfdt_get_addr(dev);
++
++	max_clk = clk_get_rate(&clk);
++	if (IS_ERR_VALUE(max_clk)) {
++		ret = max_clk;
++		goto err;
++	}
++
++	host->mmc = &plat->mmc;
++	host->mmc->dev = dev;
++	host->mmc->priv = host;
++	upriv->mmc = host->mmc;
++	host->ops = &snps_ops;
++
++ 	ret = mmc_of_parse(dev, &plat->cfg);
++	if (ret)
++		goto err;
++
++	ret = sdhci_setup_cfg(&plat->cfg, host, 0, 0);
++	if (ret)
++		goto err;
++
++	host->voltages = MMC_VDD_33_34;
++	ret = sdhci_probe(dev);
++	if (ret)
++		goto err;
++
++	if (dev_read_bool(dev, "pull_up"))
++		plat->pull_up_en = true;
++	if (dev_read_bool(dev, "io_fixed_1v8"))
++		plat->io_fixed_1v8 = true;
++
++	uint16_t val = sdhci_readw(host, SDHCI_HOST_CONTROL2);
++
++	if (host->voltages == MMC_VDD_165_195) {
++		val |= SDHCI_CTRL_VDD_180;
++		sdhci_writew(host, val, SDHCI_HOST_CONTROL2);
++		sdhci_phy_1_8v_init(host);
++	} else {
++		val &= ~SDHCI_CTRL_VDD_180;
++		if (plat->io_fixed_1v8)
++			val |= SDHCI_CTRL_VDD_180;
++		sdhci_writew(host, val, SDHCI_HOST_CONTROL2);
++		sdhci_phy_3_3v_init(host);
++	}
++
++	host->voltages = MMC_VDD_32_33 | MMC_VDD_33_34 | MMC_VDD_165_195;
++
++	return 0;
++
++err:
++	clk_disable(&clk);
++	clk_free(&clk);
++	return ret;
++}
++
++int snps_sdhci_init(struct mmc *mmc)
++{
++	struct sdhci_host *host = dev_get_priv(mmc->dev);
++	struct snps_sdhci_plat *plat = dev_get_plat(host->mmc->dev);
++	int ret;
++	host->voltages = MMC_VDD_33_34;
++	ret = sdhci_probe(mmc->dev);
++	if (ret)
++		return -1;
++
++	uint16_t val = sdhci_readw(host, SDHCI_HOST_CONTROL2);
++
++	if (host->voltages == MMC_VDD_165_195) {
++		val |= SDHCI_CTRL_VDD_180;
++		sdhci_writew(host, val, SDHCI_HOST_CONTROL2);
++		sdhci_phy_1_8v_init(host);
++	} else {
++		val &= ~SDHCI_CTRL_VDD_180;
++		if (plat->io_fixed_1v8)
++			val |= SDHCI_CTRL_VDD_180;
++		sdhci_writew(host, val, SDHCI_HOST_CONTROL2);
++		sdhci_phy_3_3v_init(host);
++	}
++
++	return 0;
++}
++
++static int snps_sdhci_bind(struct udevice *dev)
++{
++	struct snps_sdhci_plat *plat = dev_get_plat(dev);
++
++	return sdhci_bind(dev, &plat->mmc, &plat->cfg);
++}
++
++static const struct udevice_id snps_sdhci_ids[] = {
++	{ .compatible = "snps,dwcmshc-sdhci" },
++	{ }
++};
++
++U_BOOT_DRIVER(snps_sdhci_drv) = {
++	.name           = "snps_sdhci",
++	.id             = UCLASS_MMC,
++	.of_match       = snps_sdhci_ids,
++	.ops            = &sdhci_ops,
++	.bind           = snps_sdhci_bind,
++	.probe          = snps_sdhci_probe,
++	.priv_auto = sizeof(struct sdhci_host),
++	.plat_auto = sizeof(struct snps_sdhci_plat),
++};
++
+diff --git a/drivers/mmc/snps_sdhci.h b/drivers/mmc/snps_sdhci.h
+new file mode 100644
+index 0000000000..b0f076a248
+--- /dev/null
++++ b/drivers/mmc/snps_sdhci.h
+@@ -0,0 +1,84 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * snps sdhci driver.
++ *
++ * Copyright (C)  2011 Renesas Solutions Corp.
++ */
++
++#ifndef _SNPS_SDHCI_H_
++#define _SNPS_SDHCI_H_
++
++#define DWC_MSHC_PTR_PHY_R  0x300
++#define PHY_CNFG_R      (DWC_MSHC_PTR_PHY_R + 0x00) //32bit
++#define PHY_RSTN  0x0      //1bit
++#define PAD_SP    0x10     //4bit
++#define PAD_SN    0x14     //4bit
++
++#define PHY_CMDPAD_CNFG_R   (DWC_MSHC_PTR_PHY_R + 0x04) //16bit
++#define PHY_DATAPAD_CNFG_R  (DWC_MSHC_PTR_PHY_R + 0x06) //16bit
++#define PHY_CLKPAD_CNFG_R   (DWC_MSHC_PTR_PHY_R + 0x08) //16bit
++#define PHY_STBPAD_CNFG_R   (DWC_MSHC_PTR_PHY_R + 0x0a) //16bit
++#define PHY_RSTNPAD_CNFG_R  (DWC_MSHC_PTR_PHY_R + 0x0c) //16bit
++#define RXSEL 0x0         //3bit
++#define WEAKPULL_EN 0x3   //2bit
++#define TXSLEW_CTRL_P 0x5 //4bit
++#define TXSLEW_CTRL_N 0x9 //4bit
++
++#define PHY_PADTEST_CNFG_R  (DWC_MSHC_PTR_PHY_R + 0x0e)
++#define PHY_PADTEST_OUT_R   (DWC_MSHC_PTR_PHY_R + 0x10)
++#define PHY_PADTEST_IN_R    (DWC_MSHC_PTR_PHY_R + 0x12)
++#define PHY_PRBS_CNFG_R     (DWC_MSHC_PTR_PHY_R + 0x18)
++#define PHY_PHYLBK_CNFG_R   (DWC_MSHC_PTR_PHY_R + 0x1a)
++#define PHY_COMMDL_CNFG_R   (DWC_MSHC_PTR_PHY_R + 0x1c)
++
++#define PHY_SDCLKDL_CNFG_R  (DWC_MSHC_PTR_PHY_R + 0x1d) //8bit
++#define UPDATE_DC 0x4     //1bit
++
++#define PHY_SDCLKDL_DC_R    (DWC_MSHC_PTR_PHY_R + 0x1e)
++#define PHY_SMPLDL_CNFG_R   (DWC_MSHC_PTR_PHY_R + 0x20)
++#define PHY_ATDL_CNFG_R     (DWC_MSHC_PTR_PHY_R + 0x21)
++#define INPSEL_CNFG  2 //2bit
++
++#define PHY_DLL_CTRL_R      (DWC_MSHC_PTR_PHY_R + 0x24)
++#define DLL_EN  0x0 //1bit
++
++#define PHY_DLL_CNFG1_R     (DWC_MSHC_PTR_PHY_R + 0x25)
++#define PHY_DLL_CNFG2_R     (DWC_MSHC_PTR_PHY_R + 0x26)
++#define PHY_DLLDL_CNFG_R    (DWC_MSHC_PTR_PHY_R + 0x28)
++#define SLV_INPSEL 0x5 //2bit
++
++#define PHY_DLL_OFFST_R     (DWC_MSHC_PTR_PHY_R + 0x29)
++#define PHY_DLLMST_TSTDC_R  (DWC_MSHC_PTR_PHY_R + 0x2a)
++#define PHY_DLLBT_CNFG_R    (DWC_MSHC_PTR_PHY_R + 0x2c)
++#define PHY_DLL_STATUS_R    (DWC_MSHC_PTR_PHY_R + 0x2e)
++#define PHY_DLLDBG_MLKDC_R  (DWC_MSHC_PTR_PHY_R + 0x30)
++#define PHY_DLLDBG_SLKDC_R  (DWC_MSHC_PTR_PHY_R + 0x32)
++
++#define SNPS_SDHCI_CTRL_HS400 0x7
++
++#define P_VENDOR_SPECIFIC_AREA 0x500
++#define EMMC_CTRL_R (P_VENDOR_SPECIFIC_AREA + 0x2c)
++#define EMMC_CARD 0x1 //1bit
++
++#define AT_CTRL_R   (P_VENDOR_SPECIFIC_AREA + 0x40) // 32bit
++#define AT_EN 0x0             //1bit
++#define CI_SEL 0x1            //1bit
++#define SWIN_TH_EN 0x2        //1bit
++#define RPT_TUNE_ERR 0x3      //1bit
++#define SW_TUNE_EN 0x4        //1bit
++#define WIN_EDGE_SEL 0x8      //4bit
++#define TUNE_CLK_STOP_EN 0x10 //1bit
++#define PRE_CHANGE_DLY 0x11   //2bit
++#define POST_CHANGE_DLY 0x13  //2bit
++#define SWIN_TH_VAL 0x18      //9bit
++
++struct snps_sdhci_plat {
++	struct mmc_config cfg;
++	struct mmc mmc;
++	bool pull_up_en;
++	bool io_fixed_1v8;
++};
++
++
++
++#endif /* _SNPS_SDHCI_H_*/
+-- 
+2.34.1
+

@@ -1,0 +1,44 @@
+From d308650b8c1907a68f1ffb36fe8b97be09fef6aa Mon Sep 17 00:00:00 2001
+From: Drew Fustini <dfustini@baylibre.com>
+Date: Fri, 4 Aug 2023 20:14:45 -0700
+Subject: [PATCH 1/4] dt-bindings: mmc: sdhci-of-dwcmhsc: Add T-Head TH1520
+ support
+
+Add compatible value for the T-Head TH1520 dwcmshc controller and
+thead,io-fixed-1v8 and thead,pull-up properties.
+
+Signed-off-by: Drew Fustini <dfustini@baylibre.com>
+---
+ .../devicetree/bindings/mmc/snps,dwcmshc-sdhci.yaml      | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/mmc/snps,dwcmshc-sdhci.yaml b/Documentation/devicetree/bindings/mmc/snps,dwcmshc-sdhci.yaml
+index a43eb837f8da..57602c345cab 100644
+--- a/Documentation/devicetree/bindings/mmc/snps,dwcmshc-sdhci.yaml
++++ b/Documentation/devicetree/bindings/mmc/snps,dwcmshc-sdhci.yaml
+@@ -19,6 +19,7 @@ properties:
+       - rockchip,rk3568-dwcmshc
+       - rockchip,rk3588-dwcmshc
+       - snps,dwcmshc-sdhci
++      - thead,th1520-dwcmshc
+ 
+   reg:
+     maxItems: 1
+@@ -60,6 +61,14 @@ properties:
+     description: Specify the number of delay for tx sampling.
+     $ref: /schemas/types.yaml#/definitions/uint8
+ 
++  thead,io-fixed-1v8:
++    description: SoC PHY pad is fixed 1.8V
++    type: boolean
++
++  thead,pull-up:
++    description: True if pull-up, false if pull-down
++    type: boolean
++
+ 
+ required:
+   - compatible
+-- 
+2.34.1
+
