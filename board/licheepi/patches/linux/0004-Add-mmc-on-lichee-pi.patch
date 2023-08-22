@@ -1,17 +1,18 @@
-From 8f335261c93ae4d1c04a08cbf5c93a91632548b0 Mon Sep 17 00:00:00 2001
+From b9dae116fd77322ec21a3ca03ea16027b6898652 Mon Sep 17 00:00:00 2001
 From: Kwanghoon Son <kwangson@yahoo.com>
 Date: Thu, 17 Aug 2023 05:22:13 +0000
 Subject: [PATCH 4/4] Add mmc on lichee pi
 
 ---
- .../boot/dts/thead/th1520-lichee-pi-4a.dts      | 17 +++++++++++++++++
- 1 file changed, 17 insertions(+)
+ .../boot/dts/thead/th1520-lichee-pi-4a.dts    | 23 +++++++++++++++++++
+ arch/riscv/boot/dts/thead/th1520.dtsi         | 10 ++++++++
+ 2 files changed, 33 insertions(+)
 
 diff --git a/arch/riscv/boot/dts/thead/th1520-lichee-pi-4a.dts b/arch/riscv/boot/dts/thead/th1520-lichee-pi-4a.dts
-index a1248b2ee3a3..0d0366031de2 100644
+index a1248b2ee3a3..e70bd8add8d9 100644
 --- a/arch/riscv/boot/dts/thead/th1520-lichee-pi-4a.dts
 +++ b/arch/riscv/boot/dts/thead/th1520-lichee-pi-4a.dts
-@@ -27,6 +27,23 @@ chosen {
+@@ -27,6 +27,29 @@ chosen {
  	};
  };
  
@@ -33,9 +34,36 @@ index a1248b2ee3a3..0d0366031de2 100644
 +	thead,pull-up;
 +	bus-width = <8>;
 +	status = "okay";
++};
 +
++&sd0 {
++	max-frequency = <198000000>;
++	thead,pull-up;
++	bus-width = <4>;
++	status = "okay";
 +};
 \ No newline at end of file
+diff --git a/arch/riscv/boot/dts/thead/th1520.dtsi b/arch/riscv/boot/dts/thead/th1520.dtsi
+index b33bfb04c955..8d6fe067eb18 100644
+--- a/arch/riscv/boot/dts/thead/th1520.dtsi
++++ b/arch/riscv/boot/dts/thead/th1520.dtsi
+@@ -308,6 +308,16 @@ mmc0: mmc@ffe7080000 {
+ 			clock-names = "core";
+ 		};
+ 
++		sd0: sd@ffe7090000 {
++			compatible = "thead,th1520-dwcmshc";
++			reg = <0xff 0xe7090000 0x0 0x10000
++			       0xff 0xef014064 0x0 0x4>;
++			interrupts = <62 IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "sdhciirq";
++			clocks = <&sdhci_clk>;
++			clock-names = "core";
++		};
++
+ 		timer0: timer@ffefc32000 {
+ 			compatible = "snps,dw-apb-timer";
+ 			reg = <0xff 0xefc32000 0x0 0x14>;
 -- 
 2.34.1
 

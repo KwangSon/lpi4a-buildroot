@@ -1,4 +1,4 @@
-From d308650b8c1907a68f1ffb36fe8b97be09fef6aa Mon Sep 17 00:00:00 2001
+From 436f9951c3de8d9724a2d471847f56b1e4f10ab9 Mon Sep 17 00:00:00 2001
 From: Drew Fustini <dfustini@baylibre.com>
 Date: Fri, 4 Aug 2023 20:14:45 -0700
 Subject: [PATCH 1/4] dt-bindings: mmc: sdhci-of-dwcmhsc: Add T-Head TH1520
