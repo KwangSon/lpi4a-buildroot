@@ -1,4 +1,4 @@
-From 5219dfeea1ed667c6f052ff28688b3657f9d1d7d Mon Sep 17 00:00:00 2001
+From 4a20b64042bdbc38d10d98b18ae155556b8cfa58 Mon Sep 17 00:00:00 2001
 From: Drew Fustini <dfustini@baylibre.com>
 Date: Fri, 4 Aug 2023 20:14:48 -0700
 Subject: [PATCH 3/4] mmc: sdhci-of-dwcmshc: Add support for T-Head TH1520

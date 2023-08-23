@@ -1,4 +1,4 @@
-From 03ce16363ebac2166e7a6a1bb07c1702b438f9a8 Mon Sep 17 00:00:00 2001
+From a6d2217a2895f141d6926b2457b3d73b977b7e6a Mon Sep 17 00:00:00 2001
 From: Drew Fustini <dfustini@baylibre.com>
 Date: Fri, 4 Aug 2023 20:14:46 -0700
 Subject: [PATCH 2/4] riscv: dts: thead: Add TH1520 mmc controller and sdhci

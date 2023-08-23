@@ -1,6 +1,5 @@
 BR2_riscv=y
 BR2_KERNEL_HEADERS_6_1=y
-BR2_ROOTFS_POST_BUILD_SCRIPT="${BR2_EXTERNAL_LPI4A_PATH}/board/licheepi/post-build.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="support/scripts/genimage.sh"
 BR2_ROOTFS_POST_SCRIPT_ARGS="-c ${BR2_EXTERNAL_LPI4A_PATH}/board/licheepi/genimage-lpi4a.cfg"
 BR2_LINUX_KERNEL=y
